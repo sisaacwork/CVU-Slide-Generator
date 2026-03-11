@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CVU City Slides</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { theme: { extend: { colors: { brand: "#66CC00" } } } }</script>
+  <style>
+    body { background:#0a0a0a; color:#fff; font-family:system-ui,sans-serif; }
+    .spin { animation:spin 0.8s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    ::-webkit-scrollbar { width:6px; }
+    ::-webkit-scrollbar-track { background:#1a1a1a; }
+    ::-webkit-scrollbar-thumb { background:#333; border-radius:3px; }
+    input[type=range] { accent-color:#66CC00; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+import { h, render } from "https://esm.sh/preact@10.23.2";
+import { useState, useEffect, useRef } from "https://esm.sh/preact@10.23.2/hooks";
+
+// ─── Set your Fly.io backend URL here after deploying ────────────────────────
+//     e.g.  const API_BASE = "https://cvu-slides-api.fly.dev";
+//     This placeholder is replaced automatically by the GitHub Actions workflow.
+const API_BASE = "%%API_URL%%";
+
+const SLIDES = [
+  { id:2, icon:"📈", title:"50 Years of Tall Building Growth",   desc:"Cumulative buildings ≥ threshold since 1975" },
+  { id:3, icon:"🏙️",  title:"vs. Other Cities in Country",        desc:"City share vs. rest of the country" },
+  { id:4, icon:"🔭", title:"Projected Tall Building Growth",     desc:"Historical + pipeline through 2030" },
+  { id:5, icon:"👥", title:"Buildings & Population Growth",      desc:"Dual-axis: buildings + GHSL population" },
+  { id:6, icon:"🥧", title:"Tall Building Characteristics",      desc:"Function & structural material breakdowns" },
+];
+
+function api(path, opts={}) { return fetch(API_BASE + path, opts); }
+function hdrs(token) { return { "Authorization":`Bearer ${token}`, "Content-Type":"application/json" }; }
+
+// ─── Login ────────────────────────────────────────────────────────────────────
+function Login({ onLogin }) {
+  const [pw,setPw]=useState(""); const [err,setErr]=useState(""); const [busy,setBusy]=useState(false);
+  async function submit(e) {
+    e.preventDefault(); setBusy(true); setErr("");
+    try {
+      const r = await api("/api/auth",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:pw})});
+      if (!r.ok) throw new Error("Incorrect password");
+      onLogin((await r.json()).token);
+    } catch(ex) { setErr(ex.message||"Login failed"); } finally { setBusy(false); }
+  }
+  return h("div",{class:"min-h-screen flex items-center justify-center px-4"},
+    h("div",{class:"w-full max-w-sm"},
+      h("div",{class:"mb-10 text-center"},
+        h("div",{class:"inline-flex items-center gap-3 mb-2"},
+          h("div",{class:"w-7 h-7 border-2 rotate-45",style:"border-color:#66CC00"}),
+          h("span",{class:"text-xl font-semibold tracking-wide"},"CVU City Slides")
+        ),
+        h("p",{class:"text-neutral-400 text-sm"},"Council on Vertical Urbanism")
+      ),
+      h("form",{onSubmit:submit,class:"space-y-4"},
+        h("div",null,
+          h("label",{class:"block text-sm text-neutral-400 mb-1.5"},"Password"),
+          h("input",{type:"password",value:pw,onInput:e=>setPw(e.target.value),required:true,autoFocus:true,
+            placeholder:"Enter access password",
+            class:"w-full bg-neutral-900 border border-neutral-700 rounded-lg px-4 py-3 text-white placeholder-neutral-600 focus:outline-none"})
+        ),
+        err && h("p",{class:"text-red-400 text-sm"},err),
+        h("button",{type:"submit",disabled:busy,class:"w-full font-semibold rounded-lg py-3 disabled:opacity-50",
+          style:"background:#66CC00;color:#000"},busy?"Signing in…":"Sign In")
+      )
+    )
+  );
+}
+
+// ─── City search ──────────────────────────────────────────────────────────────
+function CitySearch({ cities, onSelect }) {
+  const [q,setQ]=useState(""); const [open,setOpen]=useState(false); const [ft,setFt]=useState("all");
+  const ref=useRef(null);
+  useEffect(()=>{
+    function h(e){if(ref.current&&!ref.current.contains(e.target))setOpen(false);}
+    document.addEventListener("mousedown",h); return()=>document.removeEventListener("mousedown",h);
+  },[]);
+  const list=cities.filter(c=>(ft==="all"||c.type===ft)&&(!q||c.name.toLowerCase().includes(q.toLowerCase())||(c.country||"").toLowerCase().includes(q.toLowerCase())));
+  function pick(c){setQ(c.name);setOpen(false);onSelect(c);}
+  return h("div",{ref,class:"relative"},
+    h("label",{class:"block text-sm text-neutral-400 mb-1.5"},"City or Agglomeration"),
+    h("div",{class:"flex gap-1 mb-2"},
+      [["all","All"],["city","Cities"],["agglomeration","Agglomerations"]].map(([v,l])=>
+        h("button",{key:v,type:"button",onClick:()=>setFt(v),class:"text-xs px-3 py-1 rounded-full transition-colors",
+          style:ft===v?"background:#66CC00;color:#000;font-weight:600":"background:#1f1f1f;color:#999"},l)
+      )
+    ),
+    h("input",{type:"text",value:q,onInput:e=>{setQ(e.target.value);setOpen(true);},onFocus:()=>setOpen(true),
+      placeholder:"Search cities…",
+      class:"w-full bg-neutral-900 border border-neutral-700 rounded-lg px-4 py-3 text-white placeholder-neutral-600 focus:outline-none"}),
+    open&&list.length>0&&h("div",{class:"absolute z-50 mt-1 w-full bg-neutral-900 border border-neutral-700 rounded-lg shadow-2xl overflow-y-auto",style:"max-height:280px"},
+      list.slice(0,100).map(c=>
+        h("button",{key:`${c.type}-${c.id}`,type:"button",onClick:()=>pick(c),
+          class:"w-full text-left px-4 py-2.5 hover:bg-neutral-800 flex items-center justify-between gap-2"},
+          h("span",{class:"text-sm text-white truncate"},c.name),
+          h("span",{class:"text-xs text-neutral-500 shrink-0"},[c.country,c.type==="city"?"City":"Agglomeration"].filter(Boolean).join(" · "))
+        )
+      ),
+      list.length>100&&h("p",{class:"px-4 py-2 text-xs text-neutral-500"},`${list.length-100} more — refine your search`)
+    )
+  );
+}
+
+// ─── Slide card ───────────────────────────────────────────────────────────────
+function SlideCard({ slide, checked, onToggle }) {
+  return h("label",{class:"flex items-center gap-3 p-4 rounded-xl border cursor-pointer transition-all",
+    style:checked?"border-color:#66CC00;background:rgba(102,204,0,0.06)":"border-color:#262626;background:#111"},
+    h("input",{type:"checkbox",checked,onChange:()=>onToggle(slide.id),class:"sr-only"}),
+    h("span",{style:"font-size:1.4rem"},slide.icon),
+    h("div",{class:"flex-1 min-w-0"},
+      h("p",{class:"text-sm font-medium text-white leading-snug"},slide.title),
+      h("p",{class:"text-xs text-neutral-500 mt-0.5"},slide.desc)
+    ),
+    h("div",{class:"w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0",
+      style:checked?"border-color:#66CC00;background:#66CC00":"border-color:#555"},
+      checked&&h("svg",{viewBox:"0 0 12 12",fill:"none",width:12,height:12},
+        h("path",{d:"M2 6l3 3 5-5",stroke:"#000","stroke-width":"2","stroke-linecap":"round","stroke-linejoin":"round"})
+      )
+    )
+  );
+}
+
+// ─── Sync panel ───────────────────────────────────────────────────────────────
+function SyncPanel({ token }) {
+  const [st,setSt]=useState(null); const [busy,setBusy]=useState(false);
+  async function refresh(){try{const r=await api("/api/sync/status",{headers:hdrs(token)});if(r.ok)setSt(await r.json());}catch{}}
+  async function sync(){setBusy(true);try{await api("/api/sync",{method:"POST",headers:hdrs(token)});await refresh();}finally{setBusy(false);}}
+  useEffect(()=>{refresh();},[]);
+  const col={success:"#66CC00",failed:"#f87171",running:"#facc15",never:"#6b7280"};
+  const s=st?.last_status||"never";
+  return h("div",{class:"rounded-xl border p-4 text-xs space-y-3",style:"border-color:#262626;background:#111"},
+    h("div",{class:"flex items-center justify-between"},
+      h("span",{class:"text-neutral-400 font-medium"},"Database Sync"),
+      h("button",{type:"button",onClick:sync,disabled:busy||st?.running,class:"px-3 py-1 rounded-lg text-neutral-300 disabled:opacity-40",style:"background:#1f1f1f"},
+        st?.running?"Running…":busy?"Starting…":"Sync Now")
+    ),
+    st&&h("div",{class:"space-y-0.5"},
+      h("p",{class:"text-neutral-500"},"Last run: ",h("span",{class:"text-neutral-400"},st.last_run?new Date(st.last_run).toLocaleString():"Never")),
+      h("p",{class:"text-neutral-500"},"Status: ",h("span",{style:`color:${col[s]||"#999"}`},s))
+    ),
+    !st&&h("p",{class:"text-neutral-600"},"Loading…")
+  );
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────────
+function App() {
+  const [token,setToken]=useState(()=>sessionStorage.getItem("cvu_tok")||"");
+  const [cities,setCities]=useState([]); const [citiesErr,setCitiesErr]=useState("");
+  const [sel,setSel]=useState(null); const [thresh,setThresh]=useState(100);
+  const [slides,setSlides]=useState([2,3,4,5,6]);
+  const [busy,setBusy]=useState(false); const [err,setErr]=useState(""); const [done,setDone]=useState(false);
+
+  function login(t){setToken(t);sessionStorage.setItem("cvu_tok",t);}
+  function logout(){setToken("");sessionStorage.removeItem("cvu_tok");}
+
+  useEffect(()=>{
+    if(!token)return;
+    api("/api/cities",{headers:hdrs(token)})
+      .then(r=>{if(r.status===401){logout();return null;}return r.json();})
+      .then(d=>{if(d)setCities(d.cities||d);})
+      .catch(()=>setCitiesErr("Network error loading cities"));
+  },[token]);
+
+  function toggle(id){setSlides(p=>p.includes(id)?p.filter(s=>s!==id):[...p,id]);setDone(false);}
+
+  async function generate(){
+    if(!sel)return;
+    setBusy(true);setErr("");setDone(false);
+    try{
+      const r=await api("/api/generate",{method:"POST",headers:hdrs(token),body:JSON.stringify({
+        city_id:Number(sel.id),city_type:sel.type,city_name:sel.name,
+        country_id:sel.country_id?Number(sel.country_id):null,
+        threshold:thresh,slides,
+      })});
+      if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.detail||`Error ${r.status}`);}
+      const blob=await r.blob();
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement("a");
+      const m=(r.headers.get("Content-Disposition")||"").match(/filename="([^"]+)"/);
+      a.href=url;a.download=m?m[1]:"CVU_City_Slides.pptx";a.click();URL.revokeObjectURL(url);
+      setDone(true);
+    }catch(ex){setErr(ex.message||"Generation failed");}finally{setBusy(false);}
+  }
+
+  if(!token) return h(Login,{onLogin:login});
+  const canGen=sel&&slides.length>0;
+
+  return h("div",{class:"min-h-screen flex flex-col"},
+    h("header",{class:"border-b px-6 py-4 flex items-center justify-between",style:"border-color:#1f1f1f"},
+      h("div",{class:"flex items-center gap-3"},
+        h("div",{class:"w-6 h-6 border-2 rotate-45",style:"border-color:#66CC00"}),
+        h("span",{class:"font-semibold tracking-wide"},"CVU City Slides")
+      ),
+      h("button",{onClick:logout,class:"text-sm text-neutral-500 hover:text-neutral-300"},"Sign out")
+    ),
+    h("div",{class:"flex-1 max-w-5xl mx-auto w-full px-4 py-8"},
+      h("div",{style:"display:flex;gap:2rem;flex-wrap:wrap;align-items:flex-start"},
+
+        // Left panel
+        h("div",{style:"flex:0 0 320px;min-width:260px;display:flex;flex-direction:column;gap:1.5rem"},
+          h("div",null,
+            h("h1",{class:"text-2xl font-bold mb-1"},"Generate City Deck"),
+            h("p",{class:"text-neutral-400 text-sm"},"Select a city, pick your slides, export in seconds.")
+          ),
+          citiesErr?h("p",{class:"text-red-400 text-sm"},citiesErr):h(CitySearch,{cities,onSelect:c=>{setSel(c);setDone(false);}}),
+          h("div",null,
+            h("label",{class:"block text-sm text-neutral-400 mb-1.5"},"Height threshold (metres)"),
+            h("div",{class:"flex items-center gap-3"},
+              h("input",{type:"range",min:50,max:300,step:25,value:thresh,
+                onInput:e=>{setThresh(Number(e.target.value));setDone(false);},class:"flex-1"}),
+              h("span",{class:"font-mono text-white w-16 text-right"},`${thresh} m`)
+            ),
+            h("p",{class:"text-xs mt-1",style:"color:#4a4a4a"},`Only buildings ≥ ${thresh} m counted`)
+          ),
+          sel&&h("div",{class:"rounded-xl border p-4",style:"border-color:#262626;background:#111"},
+            h("p",{class:"text-xs text-neutral-500 mb-1"},"Selected"),
+            h("p",{class:"font-semibold text-white"},sel.name),
+            sel.country&&h("p",{class:"text-sm text-neutral-400"},sel.country),
+            h("span",{class:"inline-block mt-1 text-xs px-2 py-0.5 rounded-full",style:"background:#1f1f1f;color:#999"},
+              sel.type==="city"?"City":"Urban Agglomeration")
+          ),
+          h("button",{onClick:generate,disabled:!canGen||busy,type:"button",
+            class:"w-full py-3.5 rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-40 text-sm",
+            style:"background:#66CC00;color:#000"},
+            busy?[h("svg",{class:"spin",width:16,height:16,viewBox:"0 0 24 24",fill:"none"},
+                    h("circle",{cx:12,cy:12,r:10,stroke:"currentColor","stroke-width":4,opacity:.25}),
+                    h("path",{fill:"currentColor",opacity:.75,d:"M4 12a8 8 0 018-8v8z"})
+                  ),"Building slides…"]
+                :[h("svg",{width:16,height:16,fill:"none",viewBox:"0 0 24 24",stroke:"currentColor","stroke-width":2},
+                    h("path",{"stroke-linecap":"round","stroke-linejoin":"round",d:"M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"})
+                  ),"Export Slide Deck"]
+          ),
+          done&&h("p",{class:"text-sm text-center",style:"color:#66CC00"},"✓ Downloaded successfully"),
+          err&&h("p",{class:"text-red-400 text-sm text-center"},err),
+          h(SyncPanel,{token})
+        ),
+
+        // Right panel — slide selector
+        h("div",{style:"flex:1;min-width:260px"},
+          h("div",{class:"flex items-center justify-between mb-4"},
+            h("h2",{class:"text-sm font-medium text-neutral-300"},"Select Slides"),
+            h("div",{class:"flex gap-3 text-xs"},
+              h("button",{type:"button",onClick:()=>setSlides([2,3,4,5,6]),class:"text-neutral-500 hover:text-neutral-300"},"Select all"),
+              h("span",{class:"text-neutral-700"},"·"),
+              h("button",{type:"button",onClick:()=>setSlides([]),class:"text-neutral-500 hover:text-neutral-300"},"Clear")
+            )
+          ),
+          h("div",{style:"display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:0.75rem"},
+            SLIDES.map(s=>h(SlideCard,{key:s.id,slide:s,checked:slides.includes(s.id),onToggle:toggle}))
+          ),
+          h("div",{class:"mt-6 p-4 rounded-xl border text-xs",style:"border-color:#1f1f1f;background:#111"},
+            h("p",{class:"text-neutral-500"},
+              h("span",{class:"text-neutral-400 font-medium"},"Always included: "),
+              "Cover slide and CVU closing slide are part of every export."
+            )
+          )
+        )
+      )
+    )
+  );
+}
+
+render(h(App,null),document.getElementById("root"));
+</script>
+</body>
+</html>
