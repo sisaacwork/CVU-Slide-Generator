@@ -1,7 +1,7 @@
 # fly.toml — Fly.io deployment configuration for CVU Slides backend
 # Deploy with: fly deploy  (from the backend/ directory)
 
-app = "cvu-slides-api"   # change this to your chosen app name when running `fly launch`
+app = "cvu-slide-generator"   # change this to your chosen app name when running `fly launch`
 primary_region = "iad"   # Washington DC — change to nearest region if preferred
 
 [build]
