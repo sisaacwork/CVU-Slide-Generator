@@ -53,7 +53,7 @@ function Login({ onLogin }) {
     h("div",{class:"w-full max-w-sm"},
       h("div",{class:"mb-10 text-center"},
         h("div",{class:"inline-flex items-center gap-3 mb-2"},
-          h("div",{class:"w-7 h-7 border-2 rotate-45",style:"border-color:#B4E817"}),
+          h("img",{src:"cvu.png",class:"w-7 h-7 object-contain"}),
           h("span",{class:"text-xl font-semibold tracking-wide"},"CVU City Slides")
         ),
         h("p",{class:"text-neutral-400 text-sm"},"Council on Vertical Urbanism")
@@ -194,7 +194,7 @@ function App() {
   return h("div",{class:"min-h-screen flex flex-col"},
     h("header",{class:"border-b px-6 py-4 flex items-center justify-between",style:"border-color:#1f1f1f"},
       h("div",{class:"flex items-center gap-3"},
-        h("div",{class:"w-6 h-6 border-2 rotate-45",style:"border-color:#B4E817"}),
+        h("img",{src:"cvu.png",class:"w-6 h-6 object-contain"}),
         h("span",{class:"font-semibold tracking-wide"},"CVU City Slides")
       ),
       h("button",{onClick:logout,class:"text-sm text-neutral-500 hover:text-neutral-300"},"Sign out")
