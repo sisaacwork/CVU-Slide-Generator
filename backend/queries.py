@@ -48,14 +48,13 @@ def get_city_list():
 # ─── Column constants ────────────────────────────────────────────────────────
 # Hardcoded to match actual ctbuh_building schema
 HEIGHT_COL = 'height_architecture'
-YEAR_COL   = 'completed'
+YEAR_COL   = 'completed'          # integer column
 CITY_COL   = 'city_id'
 STATUS_COL = 'status'
 MAT_COL    = 'structural_material'
 
-# Fix 5: function is derived from two columns:
-#   if main_use_02 is empty → use main_use_01, otherwise → 'Mixed-use'
-FUNC_EXPR  = "CASE WHEN main_use_02 IS NULL OR main_use_02 = '' THEN main_use_01 ELSE 'Mixed-use' END"
+# Function: cast both enum columns to text so 'Mixed-use' string is valid
+FUNC_EXPR  = "CASE WHEN main_use_02::text IS NULL OR main_use_02::text = '' THEN main_use_01::text ELSE 'Mixed-use' END"
 
 
 def _make_cumulative(yearly_dict, year_range):
@@ -89,14 +88,13 @@ def slide2_data(city_id: int, city_type: str, threshold: int):
         """
 
     sql = f"""
-        SELECT CAST({yr} AS integer) AS yr, COUNT(*) AS cnt
+        SELECT {yr} AS yr, COUNT(*) AS cnt
         FROM ctbuh_building b
         WHERE {city_filter}
           AND CAST({h} AS numeric) >= %(threshold)s
           AND {st} IN %(statuses)s
           AND {yr} IS NOT NULL
-          AND {yr} ~ '^[0-9]{{4}}$'
-          AND CAST({yr} AS integer) BETWEEN %(start)s AND %(end_yr)s
+          AND {yr} BETWEEN %(start)s AND %(end_yr)s
         GROUP BY yr
         ORDER BY yr
     """
@@ -140,12 +138,12 @@ def slide3_data(city_id: int, city_type: str, country_id: int, threshold: int):
         return None
 
     base = f"""
-        SELECT CAST({yr} AS integer) AS yr, COUNT(*) AS cnt
+        SELECT {yr} AS yr, COUNT(*) AS cnt
         FROM ctbuh_building b
         WHERE CAST({h} AS numeric) >= %(threshold)s
           AND {st} IN %(statuses)s
-          AND {yr} IS NOT NULL AND {yr} ~ '^[0-9]{{4}}$'
-          AND CAST({yr} AS integer) BETWEEN %(start)s AND %(end_yr)s
+          AND {yr} IS NOT NULL
+          AND {yr} BETWEEN %(start)s AND %(end_yr)s
     """
     params = {
         'city_id': city_id, 'country_id': country_id,
@@ -195,23 +193,23 @@ def slide4_data(city_id: int, city_type: str, threshold: int):
             WHERE ac.agglomeration_id = %(city_id)s)"""
 
     completed_sql = f"""
-        SELECT CAST({yr} AS integer) AS yr, COUNT(*) AS cnt
+        SELECT {yr} AS yr, COUNT(*) AS cnt
         FROM ctbuh_building b
         WHERE {city_filter}
           AND CAST({h} AS numeric) >= %(threshold)s
           AND {st} IN %(comp_statuses)s
-          AND {yr} IS NOT NULL AND {yr} ~ '^[0-9]{{4}}$'
-          AND CAST({yr} AS integer) BETWEEN %(start)s AND %(cur_yr)s
+          AND {yr} IS NOT NULL
+          AND {yr} BETWEEN %(start)s AND %(cur_yr)s
         GROUP BY yr ORDER BY yr
     """
     future_sql = f"""
-        SELECT CAST({yr} AS integer) AS yr, COUNT(*) AS cnt
+        SELECT {yr} AS yr, COUNT(*) AS cnt
         FROM ctbuh_building b
         WHERE {city_filter}
           AND CAST({h} AS numeric) >= %(threshold)s
           AND {st} NOT IN %(comp_statuses)s
-          AND {yr} IS NOT NULL AND {yr} ~ '^[0-9]{{4}}$'
-          AND CAST({yr} AS integer) BETWEEN %(cur_yr)s AND %(future_end)s
+          AND {yr} IS NOT NULL
+          AND {yr} BETWEEN %(cur_yr)s AND %(future_end)s
         GROUP BY yr ORDER BY yr
     """
 
@@ -260,33 +258,27 @@ def slide5_data(city_id: int, city_type: str, threshold: int, city_name: str):
     # Reuse slide4 data for building series
     s4 = slide4_data(city_id, city_type, threshold)
 
-    # Get population from GHSL
+    # Get population from GHSL (wide format: GH_POP_TOT_1975 … GH_POP_TOT_2030)
+    # City name column is GC_UCN_MAI_2025
     pop_by_year = {}
     with ghsl_conn() as conn:
         cur = conn.cursor()
         try:
-            # Try long format first: one row per city per year
-            cur.execute("""
-                SELECT CAST(year AS integer), CAST(population AS bigint)
-                FROM ghsl
-                WHERE city_name ILIKE %(name)s
-                ORDER BY year
-            """, {'name': f'%{city_name}%'})
-            rows = cur.fetchall()
-            if rows:
-                pop_by_year = dict(rows)
-            else:
-                # Fallback: wide format with columns p_1975, p_1980 …
-                cur.execute("SELECT * FROM ghsl WHERE city_name ILIKE %(n)s LIMIT 1",
-                            {'n': f'%{city_name}%'})
-                row = cur.fetchone()
-                if row:
-                    import re
-                    colnames = [d.name for d in cur.description]
-                    for col, val in zip(colnames, row):
-                        m = re.match(r'p[_]?(\d{4})', col)
-                        if m and val is not None:
+            import re
+            cur.execute(
+                'SELECT * FROM ghsl WHERE "GC_UCN_MAI_2025" ILIKE %(name)s LIMIT 1',
+                {'name': f'%{city_name}%'}
+            )
+            row = cur.fetchone()
+            if row:
+                colnames = [d.name for d in cur.description]
+                for col, val in zip(colnames, row):
+                    m = re.match(r'GH_POP_TOT_(\d{4})$', col)
+                    if m and val is not None:
+                        try:
                             pop_by_year[int(m.group(1))] = int(val)
+                        except (ValueError, TypeError):
+                            pass
         except Exception as e:
             log.warning("GHSL population query failed: %s", e)
 
@@ -362,7 +354,7 @@ def slide6_data(city_id: int, city_type: str, threshold: int):
             WHERE {city_filter}
               AND CAST({h} AS numeric) >= %(threshold)s
               AND {st} IN %(statuses)s
-              AND main_use_01 IS NOT NULL AND main_use_01 != ''
+              AND main_use_01 IS NOT NULL AND main_use_01::text != ''
             GROUP BY cat ORDER BY cnt DESC LIMIT 8
         """, params)
         func_rows = cur.fetchall()
