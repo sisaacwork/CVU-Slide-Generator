@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CVU City Slides</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script>tailwind.config = { theme: { extend: { colors: { brand: "#66CC00" } } } }</script>
+  <script>tailwind.config = { theme: { extend: { colors: { brand: "#B4E817" } } } }</script>
   <style>
     body { background:#0a0a0a; color:#fff; font-family:system-ui,sans-serif; }
     .spin { animation:spin 0.8s linear infinite; }
@@ -13,7 +13,7 @@
     ::-webkit-scrollbar { width:6px; }
     ::-webkit-scrollbar-track { background:#1a1a1a; }
     ::-webkit-scrollbar-thumb { background:#333; border-radius:3px; }
-    input[type=range] { accent-color:#66CC00; }
+    input[type=range] { accent-color:#B4E817; }
   </style>
 </head>
 <body>
@@ -57,10 +57,10 @@ function Login({ onLogin }) {
     h("div",{class:"w-full max-w-sm"},
       h("div",{class:"mb-10 text-center"},
         h("div",{class:"inline-flex items-center gap-3 mb-2"},
-          h("img",{src:"logo.png",class:"w-7 h-7 object-contain",
+          h("img",{src:"cvu.png",class:"w-7 h-7 object-contain",
             onError:e=>{e.target.style.display="none";e.target.nextSibling.style.display="block";},
           }),
-          h("div",{class:"w-7 h-7 border-2 rotate-45",style:"border-color:#66CC00;display:none"}),
+          h("div",{class:"w-7 h-7 border-2 rotate-45",style:"border-color:#B4E817;display:none"}),
           h("span",{class:"text-xl font-semibold tracking-wide"},"CVU City Slides")
         ),
         h("p",{class:"text-neutral-400 text-sm"},"Council on Vertical Urbanism")
@@ -74,7 +74,7 @@ function Login({ onLogin }) {
         ),
         err && h("p",{class:"text-red-400 text-sm"},err),
         h("button",{type:"submit",disabled:busy,class:"w-full font-semibold rounded-lg py-3 disabled:opacity-50",
-          style:"background:#66CC00;color:#000"},busy?"Signing in…":"Sign In")
+          style:"background:#B4E817;color:#171717"},busy?"Signing in…":"Sign In")
       )
     )
   );
@@ -131,7 +131,7 @@ function GeoSearch({ items, geoType, onSelect }) {
 function SlideCard({ slide, checked, onToggle, disabled }) {
   return h("label",{
     class:`flex items-center gap-3 p-4 rounded-xl border transition-all ${disabled?"opacity-40 cursor-not-allowed":"cursor-pointer"}`,
-    style:checked&&!disabled?"border-color:#66CC00;background:rgba(102,204,0,0.06)":"border-color:#262626;background:#111"
+    style:checked&&!disabled?"border-color:#B4E817;background:rgba(102,204,0,0.06)":"border-color:#262626;background:#111"
   },
     h("input",{type:"checkbox",checked:checked&&!disabled,onChange:()=>!disabled&&onToggle(slide.id),class:"sr-only"}),
     h("span",{style:"font-size:1.4rem"},slide.icon),
@@ -142,9 +142,9 @@ function SlideCard({ slide, checked, onToggle, disabled }) {
       )
     ),
     h("div",{class:"w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0",
-      style:checked&&!disabled?"border-color:#66CC00;background:#66CC00":"border-color:#555"},
+      style:checked&&!disabled?"border-color:#B4E817;background:#B4E817":"border-color:#555"},
       checked&&!disabled&&h("svg",{viewBox:"0 0 12 12",fill:"none",width:12,height:12},
-        h("path",{d:"M2 6l3 3 5-5",stroke:"#000","stroke-width":"2","stroke-linecap":"round","stroke-linejoin":"round"})
+        h("path",{d:"M2 6l3 3 5-5",stroke:"#171717","stroke-width":"2","stroke-linecap":"round","stroke-linejoin":"round"})
       )
     )
   );
@@ -195,7 +195,7 @@ function SyncPanel({ token }) {
     };
   },[]);
 
-  const col={success:"#66CC00",failed:"#f87171",running:"#facc15",never:"#6b7280"};
+  const col={success:"#B4E817",failed:"#f87171",running:"#facc15",never:"#6b7280"};
   const s=st?.last_status||"never";
   const isRunning=st?.running;
 
@@ -293,10 +293,10 @@ function App() {
     // Header
     h("header",{class:"border-b px-6 py-4 flex items-center justify-between",style:"border-color:#1f1f1f"},
       h("div",{class:"flex items-center gap-3"},
-        h("img",{src:"logo.png",class:"w-6 h-6 object-contain",
+        h("img",{src:"cvu.png",class:"w-6 h-6 object-contain",
           onError:e=>{e.target.style.display="none";e.target.nextSibling.style.display="block";},
         }),
-        h("div",{class:"w-6 h-6 border-2 rotate-45",style:"border-color:#66CC00;display:none"}),
+        h("div",{class:"w-6 h-6 border-2 rotate-45",style:"border-color:#B4E817;display:none"}),
         h("span",{class:"font-semibold tracking-wide"},"CVU City Slides")
       ),
       h("button",{onClick:logout,class:"text-sm text-neutral-500 hover:text-neutral-300"},"Sign out")
@@ -320,7 +320,7 @@ function App() {
               GEO_TYPES.map(gt=>
                 h("button",{key:gt.id,type:"button",onClick:()=>setGeoType(gt.id),
                   class:"py-2 rounded-lg text-sm font-medium transition-colors",
-                  style:geoType===gt.id?"background:#66CC00;color:#000":"background:#1f1f1f;color:#999"},
+                  style:geoType===gt.id?"background:#B4E817;color:#171717":"background:#1f1f1f;color:#999"},
                   gt.label
                 )
               )
@@ -356,7 +356,7 @@ function App() {
           // Generate button
           h("button",{onClick:generate,disabled:!canGen||busy,type:"button",
             class:"w-full py-3.5 rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-40 text-sm",
-            style:"background:#66CC00;color:#000"},
+            style:"background:#B4E817;color:#171717"},
             busy
               ? [h("svg",{class:"spin",width:16,height:16,viewBox:"0 0 24 24",fill:"none"},
                     h("circle",{cx:12,cy:12,r:10,stroke:"currentColor","stroke-width":4,opacity:.25}),
@@ -366,7 +366,7 @@ function App() {
                     h("path",{"stroke-linecap":"round","stroke-linejoin":"round",d:"M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"})
                   ),"Export Slide Deck"]
           ),
-          done&&h("p",{class:"text-sm text-center",style:"color:#66CC00"},"✓ Downloaded successfully"),
+          done&&h("p",{class:"text-sm text-center",style:"color:#B4E817"},"✓ Downloaded successfully"),
           err&&h("p",{class:"text-red-400 text-sm text-center"},err),
 
           h(SyncPanel,{token})
