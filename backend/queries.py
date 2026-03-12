@@ -1,9 +1,14 @@
 """
 queries.py — all SQL data retrieval for each slide.
 
-Each function returns a dict ready for pptx_gen.py.
+Geography types: city | agglomeration | country | region
+Each slide function accepts geo_id + geo_type and builds
+the appropriate WHERE clause via _geo_filter().
 """
 import logging
+import datetime
+import re
+
 from db import cvu_conn, ghsl_conn
 
 log = logging.getLogger(__name__)
@@ -11,16 +16,84 @@ log = logging.getLogger(__name__)
 START_YEAR = 1975
 COMPLETED_STATUSES = ('COM',)
 
+# ─── Column constants ────────────────────────────────────────────────────────
+HEIGHT_COL = 'height_architecture'
+YEAR_COL   = 'completed'          # integer column
+CITY_COL   = 'city_id'
+STATUS_COL = 'status'
+MAT_COL    = 'structural_material'
 
-# ─── City / agglomeration lists ─────────────────────────────────────────────
+# Slide 6 — Function: 5 fixed buckets
+# main_use_01/02 are enums so must cast to ::text before comparisons
+FUNC_EXPR = """
+CASE
+  WHEN main_use_02::text IS NOT NULL AND main_use_02::text != ''
+    THEN 'Mixed-use'
+  WHEN LOWER(main_use_01::text) LIKE '%%office%%'
+    THEN 'All-Office'
+  WHEN LOWER(main_use_01::text) LIKE '%%residential%%'
+    THEN 'All-Residential'
+  WHEN LOWER(main_use_01::text) LIKE '%%hotel%%'
+    THEN 'All-Hotel'
+  ELSE 'Other'
+END
+""".strip()
+
+# Slide 6 — Material: 5 fixed buckets
+# composite checked first as it may contain 'concrete'/'steel' in its name
+MAT_EXPR = """
+CASE
+  WHEN LOWER(structural_material::text) LIKE '%%composite%%'
+    THEN 'Composite'
+  WHEN LOWER(structural_material::text) LIKE '%%concrete%%'
+   AND LOWER(structural_material::text) LIKE '%%steel%%'
+    THEN 'Concrete-Steel Hybrid'
+  WHEN LOWER(structural_material::text) LIKE '%%concrete%%'
+    THEN 'All-Concrete'
+  WHEN LOWER(structural_material::text) LIKE '%%steel%%'
+    THEN 'All-Steel'
+  ELSE 'Other'
+END
+""".strip()
+
+
+# ─── Geography filter helper ─────────────────────────────────────────────────
+
+def _geo_filter(geo_type: str, param: str = 'geo_id') -> str:
+    """Return a SQL WHERE fragment for the given geography type."""
+    if geo_type == 'city':
+        return f"b.{CITY_COL} = %({param})s"
+    elif geo_type == 'agglomeration':
+        return f"""b.{CITY_COL} IN (
+            SELECT c.id FROM v2_cities c
+            JOIN agglomeration_countries ac ON ac.country_id = c.country_id
+            WHERE ac.agglomeration_id = %({param})s)"""
+    elif geo_type == 'country':
+        return f"b.country_id = %({param})s"
+    elif geo_type == 'region':
+        return f"b.region_id = %({param})s"
+    else:
+        raise ValueError(f"Unknown geo_type: {geo_type!r}")
+
+
+def _make_cumulative(yearly_dict, year_range):
+    result = []
+    running = 0
+    for y in year_range:
+        running += yearly_dict.get(y, 0)
+        result.append((y, running))
+    return result
+
+
+# ─── City / country / region lists ──────────────────────────────────────────
 
 def get_city_list():
-    """Return merged list of cities and agglomerations for the picker."""
+    """Return merged list of cities, agglomerations, countries and regions."""
     with cvu_conn() as conn:
         cur = conn.cursor()
-        # Cities
+
         cur.execute("""
-            SELECT c.id, c.name, co.name as country_name, co.id as country_id
+            SELECT c.id, c.name, co.name AS country_name, co.id AS country_id
             FROM v2_cities c
             JOIN v2_countries co ON co.id = c.country_id
             ORDER BY c.name
@@ -31,9 +104,8 @@ def get_city_list():
             for r in cur.fetchall()
         ]
 
-        # Agglomerations
         cur.execute("""
-            SELECT a.id, a.name_intl as name
+            SELECT a.id, a.name_intl AS name
             FROM agglomerations a
             ORDER BY a.name_intl
         """)
@@ -42,182 +114,138 @@ def get_city_list():
              "country": None, "country_id": None}
             for r in cur.fetchall()
         ]
-    return cities + agglos
 
+        cur.execute("SELECT id, name FROM v2_countries ORDER BY name")
+        countries = [
+            {"type": "country", "id": r[0], "name": r[1],
+             "country": None, "country_id": r[0]}
+            for r in cur.fetchall()
+        ]
 
-# ─── Column constants ────────────────────────────────────────────────────────
-# Hardcoded to match actual ctbuh_building schema
-HEIGHT_COL = 'height_architecture'
-YEAR_COL   = 'completed'          # integer column
-CITY_COL   = 'city_id'
-STATUS_COL = 'status'
-MAT_COL    = 'structural_material'
+        cur.execute("SELECT id, name FROM v2_regions ORDER BY name")
+        regions = [
+            {"type": "region", "id": r[0], "name": r[1],
+             "country": None, "country_id": None}
+            for r in cur.fetchall()
+        ]
 
-# Function: cast both enum columns to text so 'Mixed-use' string is valid
-FUNC_EXPR  = "CASE WHEN main_use_02::text IS NULL OR main_use_02::text = '' THEN main_use_01::text ELSE 'Mixed-use' END"
-
-
-def _make_cumulative(yearly_dict, year_range):
-    """
-    Given {year: count}, return list of (year, cumulative) over year_range.
-    Missing years keep the previous cumulative value.
-    """
-    result = []
-    running = 0
-    for y in year_range:
-        running += yearly_dict.get(y, 0)
-        result.append((y, running))
-    return result
+    return cities + agglos + countries + regions
 
 
 # ─── Slide 2: 50 Years of Cumulative Growth ─────────────────────────────────
 
-def slide2_data(city_id: int, city_type: str, threshold: int):
-    h = HEIGHT_COL; yr = YEAR_COL; cid = CITY_COL; st = STATUS_COL
-
-    if city_type == 'city':
-        city_filter = f"b.{cid} = %(city_id)s"
-    else:
-        # Agglomeration: join through agglomeration_countries → v2_cities
-        city_filter = f"""
-            b.{cid} IN (
-                SELECT c.id FROM v2_cities c
-                JOIN agglomeration_countries ac ON ac.country_id = c.country_id
-                WHERE ac.agglomeration_id = %(city_id)s
-            )
-        """
+def slide2_data(geo_id: int, geo_type: str, threshold: int):
+    current_year = datetime.date.today().year
+    city_filter  = _geo_filter(geo_type)
 
     sql = f"""
-        SELECT {yr} AS yr, COUNT(*) AS cnt
+        SELECT {YEAR_COL} AS yr, COUNT(*) AS cnt
         FROM ctbuh_building b
         WHERE {city_filter}
-          AND CAST({h} AS numeric) >= %(threshold)s
-          AND {st} IN %(statuses)s
-          AND {yr} IS NOT NULL
-          AND {yr} BETWEEN %(start)s AND %(end_yr)s
-        GROUP BY yr
-        ORDER BY yr
+          AND CAST({HEIGHT_COL} AS numeric) >= %(threshold)s
+          AND {STATUS_COL} IN %(statuses)s
+          AND {YEAR_COL} IS NOT NULL
+          AND {YEAR_COL} BETWEEN %(start)s AND %(end_yr)s
+        GROUP BY yr ORDER BY yr
     """
-    import datetime; current_year = datetime.date.today().year
 
     with cvu_conn() as conn:
         cur = conn.cursor()
         cur.execute(sql, {
-            'city_id': city_id, 'threshold': threshold,
+            'geo_id': geo_id, 'threshold': threshold,
             'statuses': COMPLETED_STATUSES,
-            'start': START_YEAR, 'end_yr': current_year
+            'start': START_YEAR, 'end_yr': current_year,
         })
         rows = dict(cur.fetchall())
 
-    year_range = list(range(START_YEAR, current_year + 1))
-    cumulative = _make_cumulative(rows, year_range)
-
-    # Mark current/previous year as provisional
+    year_range  = list(range(START_YEAR, current_year + 1))
+    cumulative  = _make_cumulative(rows, year_range)
     years_labels = [str(y) if y < current_year else f"{y}*" for y in year_range]
     values       = [c for _, c in cumulative]
 
-    val_2000 = next((c for y, c in cumulative if y == 2000), 0)
-    val_now  = values[-1] if values else 0
+    val_2000   = next((c for y, c in cumulative if y == 2000), 0)
+    val_now    = values[-1] if values else 0
     growth_pct = round((val_now - val_2000) / val_2000 * 100) if val_2000 else 0
 
-    return {
-        'years': years_labels,
-        'values': values,
-        'growth_pct_2000': growth_pct,
-    }
+    return {'years': years_labels, 'values': values, 'growth_pct_2000': growth_pct}
 
 
-# ─── Slide 3: City vs Other Cities in Country ───────────────────────────────
+# ─── Slide 3: City vs Other Cities in Country (cities only) ─────────────────
 
-def slide3_data(city_id: int, city_type: str, country_id: int, threshold: int):
-    import datetime; current_year = datetime.date.today().year
-    h = HEIGHT_COL; yr = YEAR_COL; cid = CITY_COL; st = STATUS_COL
-
-    if city_type != 'city':
-        # For agglomerations, skip this slide (or treat agglom as city)
+def slide3_data(geo_id: int, geo_type: str, country_id: int, threshold: int):
+    """Only meaningful for city geo_type. Returns None otherwise."""
+    if geo_type != 'city':
         return None
 
+    current_year = datetime.date.today().year
+
     base = f"""
-        SELECT {yr} AS yr, COUNT(*) AS cnt
+        SELECT {YEAR_COL} AS yr, COUNT(*) AS cnt
         FROM ctbuh_building b
-        WHERE CAST({h} AS numeric) >= %(threshold)s
-          AND {st} IN %(statuses)s
-          AND {yr} IS NOT NULL
-          AND {yr} BETWEEN %(start)s AND %(end_yr)s
+        WHERE CAST({HEIGHT_COL} AS numeric) >= %(threshold)s
+          AND {STATUS_COL} IN %(statuses)s
+          AND {YEAR_COL} IS NOT NULL
+          AND {YEAR_COL} BETWEEN %(start)s AND %(end_yr)s
     """
     params = {
-        'city_id': city_id, 'country_id': country_id,
+        'geo_id': geo_id, 'country_id': country_id,
         'threshold': threshold, 'statuses': COMPLETED_STATUSES,
-        'start': START_YEAR, 'end_yr': current_year
+        'start': START_YEAR, 'end_yr': current_year,
     }
 
     with cvu_conn() as conn:
         cur = conn.cursor()
-
-        cur.execute(base + f" AND b.{cid} = %(city_id)s GROUP BY yr ORDER BY yr", params)
+        cur.execute(base + f" AND b.{CITY_COL} = %(geo_id)s GROUP BY yr ORDER BY yr", params)
         city_rows = dict(cur.fetchall())
 
         cur.execute(base + f"""
-            AND b.{cid} IN (
-                SELECT id FROM v2_cities WHERE country_id = %(country_id)s
-                AND id != %(city_id)s
+            AND b.{CITY_COL} IN (
+                SELECT id FROM v2_cities
+                WHERE country_id = %(country_id)s AND id != %(geo_id)s
             )
             GROUP BY yr ORDER BY yr
         """, params)
         other_rows = dict(cur.fetchall())
 
-    year_range  = list(range(START_YEAR, current_year + 1))
-    city_vals   = [c for _, c in _make_cumulative(city_rows, year_range)]
-    other_vals  = [c for _, c in _make_cumulative(other_rows, year_range)]
+    year_range   = list(range(START_YEAR, current_year + 1))
+    city_vals    = [c for _, c in _make_cumulative(city_rows, year_range)]
+    other_vals   = [c for _, c in _make_cumulative(other_rows, year_range)]
     years_labels = [str(y) if y < current_year else f"{y}*" for y in year_range]
 
-    return {
-        'years':       years_labels,
-        'city_values': city_vals,
-        'other_values': other_vals,
-    }
+    return {'years': years_labels, 'city_values': city_vals, 'other_values': other_vals}
 
 
 # ─── Slide 4: Projected Tall Building Growth ────────────────────────────────
 
-def slide4_data(city_id: int, city_type: str, threshold: int):
-    import datetime; current_year = datetime.date.today().year
-    h = HEIGHT_COL; yr = YEAR_COL; cid = CITY_COL; st = STATUS_COL
-
-    if city_type == 'city':
-        city_filter = f"b.{cid} = %(city_id)s"
-    else:
-        city_filter = f"""b.{cid} IN (
-            SELECT c.id FROM v2_cities c
-            JOIN agglomeration_countries ac ON ac.country_id = c.country_id
-            WHERE ac.agglomeration_id = %(city_id)s)"""
+def slide4_data(geo_id: int, geo_type: str, threshold: int):
+    current_year = datetime.date.today().year
+    city_filter  = _geo_filter(geo_type)
 
     completed_sql = f"""
-        SELECT {yr} AS yr, COUNT(*) AS cnt
+        SELECT {YEAR_COL} AS yr, COUNT(*) AS cnt
         FROM ctbuh_building b
         WHERE {city_filter}
-          AND CAST({h} AS numeric) >= %(threshold)s
-          AND {st} IN %(comp_statuses)s
-          AND {yr} IS NOT NULL
-          AND {yr} BETWEEN %(start)s AND %(cur_yr)s
+          AND CAST({HEIGHT_COL} AS numeric) >= %(threshold)s
+          AND {STATUS_COL} IN %(comp_statuses)s
+          AND {YEAR_COL} IS NOT NULL
+          AND {YEAR_COL} BETWEEN %(start)s AND %(cur_yr)s
         GROUP BY yr ORDER BY yr
     """
     future_sql = f"""
-        SELECT {yr} AS yr, COUNT(*) AS cnt
+        SELECT {YEAR_COL} AS yr, COUNT(*) AS cnt
         FROM ctbuh_building b
         WHERE {city_filter}
-          AND CAST({h} AS numeric) >= %(threshold)s
-          AND {st} NOT IN %(comp_statuses)s
-          AND {yr} IS NOT NULL
-          AND {yr} BETWEEN %(cur_yr)s AND %(future_end)s
+          AND CAST({HEIGHT_COL} AS numeric) >= %(threshold)s
+          AND {STATUS_COL} NOT IN %(comp_statuses)s
+          AND {YEAR_COL} IS NOT NULL
+          AND {YEAR_COL} BETWEEN %(cur_yr)s AND %(future_end)s
         GROUP BY yr ORDER BY yr
     """
-
     params = {
-        'city_id': city_id, 'threshold': threshold,
+        'geo_id': geo_id, 'threshold': threshold,
         'comp_statuses': COMPLETED_STATUSES,
         'start': START_YEAR, 'cur_yr': current_year,
-        'future_end': current_year + 5
+        'future_end': current_year + 5,
     }
 
     with cvu_conn() as conn:
@@ -231,7 +259,6 @@ def slide4_data(city_id: int, city_type: str, threshold: int):
     future_range = list(range(current_year + 1, current_year + 6))
 
     hist_cum   = {y: c for y, c in _make_cumulative(comp_rows, hist_range)}
-    # Projected: add future completions on top of current total
     base_total = hist_cum.get(current_year, 0)
     proj_cum   = {}
     running    = base_total
@@ -239,13 +266,12 @@ def slide4_data(city_id: int, city_type: str, threshold: int):
         running += future_rows.get(y, 0)
         proj_cum[y] = running
 
-    # Build parallel year axis: historical | overlap at current_year | future
-    all_years = hist_range + future_range
+    all_years  = hist_range + future_range
     hist_vals  = [hist_cum.get(y) for y in all_years]
     proj_vals  = [proj_cum.get(y) for y in all_years]
 
     return {
-        'years':      [str(y) for y in all_years],
+        'years':       [str(y) for y in all_years],
         'hist_values': hist_vals,
         'proj_values': proj_vals,
     }
@@ -253,50 +279,48 @@ def slide4_data(city_id: int, city_type: str, threshold: int):
 
 # ─── Slide 5: Buildings + Population ────────────────────────────────────────
 
-def slide5_data(city_id: int, city_type: str, threshold: int, city_name: str):
-    import datetime; current_year = datetime.date.today().year
-    # Reuse slide4 data for building series
-    s4 = slide4_data(city_id, city_type, threshold)
+def slide5_data(geo_id: int, geo_type: str, threshold: int, geo_name: str):
+    current_year = datetime.date.today().year
+    s4 = slide4_data(geo_id, geo_type, threshold)
 
-    # Get population from GHSL (wide format: GH_POP_TOT_1975 … GH_POP_TOT_2030)
-    # City name column is GC_UCN_MAI_2025
+    # GHSL population is only available at city/agglomeration level
     pop_by_year = {}
-    with ghsl_conn() as conn:
-        cur = conn.cursor()
-        try:
-            import re
-            cur.execute(
-                'SELECT * FROM ghsl WHERE "GC_UCN_MAI_2025" ILIKE %(name)s LIMIT 1',
-                {'name': f'%{city_name}%'}
-            )
-            row = cur.fetchone()
-            if row:
-                colnames = [d.name for d in cur.description]
-                for col, val in zip(colnames, row):
-                    m = re.match(r'GH_POP_TOT_(\d{4})$', col)
-                    if m and val is not None:
-                        try:
-                            pop_by_year[int(m.group(1))] = int(val)
-                        except (ValueError, TypeError):
-                            pass
-        except Exception as e:
-            log.warning("GHSL population query failed: %s", e)
+    if geo_type in ('city', 'agglomeration'):
+        with ghsl_conn() as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    'SELECT * FROM ghsl WHERE "GC_UCN_MAI_2025" ILIKE %(name)s LIMIT 1',
+                    {'name': f'%{geo_name}%'}
+                )
+                row = cur.fetchone()
+                if row:
+                    colnames = [d.name for d in cur.description]
+                    for col, val in zip(colnames, row):
+                        m = re.match(r'GH_POP_TOT_(\d{4})$', col)
+                        if m and val is not None:
+                            try:
+                                pop_by_year[int(m.group(1))] = int(val)
+                            except (ValueError, TypeError):
+                                pass
+            except Exception as e:
+                log.warning("GHSL population query failed: %s", e)
 
-    all_years = [int(y.rstrip('*')) for y in s4['years']]
+    all_years    = [int(y.rstrip('*')) for y in s4['years']]
     hist_range   = [y for y in all_years if y <= current_year]
     future_range = [y for y in all_years if y > current_year]
 
-    # Interpolate/extrapolate population
     def _interp_pop(year_list):
+        if not pop_by_year:
+            return [None] * len(year_list)
         out = []
-        known_years = sorted(pop_by_year.keys())
+        known = sorted(pop_by_year.keys())
         for y in year_list:
             if y in pop_by_year:
                 out.append(pop_by_year[y])
-            elif known_years:
-                # Linear interpolation between nearest known
-                before = [k for k in known_years if k <= y]
-                after  = [k for k in known_years if k >= y]
+            else:
+                before = [k for k in known if k <= y]
+                after  = [k for k in known if k >= y]
                 if before and after:
                     y0, y1 = before[-1], after[0]
                     if y0 == y1:
@@ -308,73 +332,59 @@ def slide5_data(city_id: int, city_type: str, threshold: int, city_name: str):
                     out.append(pop_by_year[before[-1]])
                 else:
                     out.append(pop_by_year[after[0]])
-            else:
-                out.append(None)
         return out
 
     hist_pop   = _interp_pop(hist_range) + [None] * len(future_range)
     future_pop = [None] * len(hist_range) + _interp_pop(future_range)
 
-    # Overlap at current_year
     if hist_range and future_range:
         pivot = len(hist_range) - 1
         future_pop[pivot] = hist_pop[pivot]
 
     return {
-        'years':        s4['years'],
-        'hist_builds':  s4['hist_values'],
-        'proj_builds':  s4['proj_values'],
-        'hist_pop':     hist_pop,
-        'future_pop':   future_pop,
+        'years':       s4['years'],
+        'hist_builds': s4['hist_values'],
+        'proj_builds': s4['proj_values'],
+        'hist_pop':    hist_pop,
+        'future_pop':  future_pop,
     }
 
 
 # ─── Slide 6: Building Characteristics ──────────────────────────────────────
 
-def slide6_data(city_id: int, city_type: str, threshold: int):
-    h = HEIGHT_COL; cid = CITY_COL; st = STATUS_COL
-
-    if city_type == 'city':
-        city_filter = f"b.{cid} = %(city_id)s"
-    else:
-        city_filter = f"""b.{cid} IN (
-            SELECT c.id FROM v2_cities c
-            JOIN agglomeration_countries ac ON ac.country_id = c.country_id
-            WHERE ac.agglomeration_id = %(city_id)s)"""
-
-    params = {'city_id': city_id, 'threshold': threshold, 'statuses': COMPLETED_STATUSES}
+def slide6_data(geo_id: int, geo_type: str, threshold: int):
+    city_filter = _geo_filter(geo_type)
+    params = {'geo_id': geo_id, 'threshold': threshold, 'statuses': COMPLETED_STATUSES}
 
     with cvu_conn() as conn:
         cur = conn.cursor()
 
-        # Fix 5: derive function from main_use_01 / main_use_02
+        # Function: 5 fixed buckets via CASE expression
         cur.execute(f"""
             SELECT ({FUNC_EXPR}) AS cat, COUNT(*) AS cnt
             FROM ctbuh_building b
             WHERE {city_filter}
-              AND CAST({h} AS numeric) >= %(threshold)s
-              AND {st} IN %(statuses)s
+              AND CAST({HEIGHT_COL} AS numeric) >= %(threshold)s
+              AND {STATUS_COL} IN %(statuses)s
               AND main_use_01 IS NOT NULL AND main_use_01::text != ''
-            GROUP BY cat ORDER BY cnt DESC LIMIT 8
+            GROUP BY cat ORDER BY cnt DESC
         """, params)
         func_rows = cur.fetchall()
 
-        # Fix 6: structural_material column
+        # Material: 5 fixed buckets via CASE expression
         cur.execute(f"""
-            SELECT COALESCE({MAT_COL}::text, 'Other') AS cat, COUNT(*) AS cnt
+            SELECT ({MAT_EXPR}) AS cat, COUNT(*) AS cnt
             FROM ctbuh_building b
             WHERE {city_filter}
-              AND CAST({h} AS numeric) >= %(threshold)s
-              AND {st} IN %(statuses)s
-              AND {MAT_COL} IS NOT NULL AND {MAT_COL} != ''
-            GROUP BY cat ORDER BY cnt DESC LIMIT 8
+              AND CAST({HEIGHT_COL} AS numeric) >= %(threshold)s
+              AND {STATUS_COL} IN %(statuses)s
+              AND {MAT_COL} IS NOT NULL AND {MAT_COL}::text != ''
+            GROUP BY cat ORDER BY cnt DESC
         """, params)
         mat_rows = cur.fetchall()
 
     def _normalise(rows):
-        cats   = [r[0] for r in rows]
-        counts = [int(r[1]) for r in rows]
-        return cats, counts
+        return [r[0] for r in rows], [int(r[1]) for r in rows]
 
     func_cats, func_counts = _normalise(func_rows)
     mat_cats,  mat_counts  = _normalise(mat_rows)
@@ -387,25 +397,32 @@ def slide6_data(city_id: int, city_type: str, threshold: int):
     }
 
 
-# ─── City metadata ───────────────────────────────────────────────────────────
+# ─── Geography metadata ──────────────────────────────────────────────────────
 
-def get_city_meta(city_id: int, city_type: str):
+def get_city_meta(geo_id: int, geo_type: str):
     with cvu_conn() as conn:
         cur = conn.cursor()
-        if city_type == 'city':
+        if geo_type == 'city':
             cur.execute("""
-                SELECT c.name, co.name as country
+                SELECT c.name, co.name
                 FROM v2_cities c JOIN v2_countries co ON co.id = c.country_id
                 WHERE c.id = %s
-            """, (city_id,))
+            """, (geo_id,))
             row = cur.fetchone()
             if row:
                 return {'city': row[0], 'country': row[1]}
-        else:
-            cur.execute("""
-                SELECT name_intl as name
-                FROM agglomerations WHERE id = %s
-            """, (city_id,))
+        elif geo_type == 'agglomeration':
+            cur.execute("SELECT name_intl FROM agglomerations WHERE id = %s", (geo_id,))
+            row = cur.fetchone()
+            if row:
+                return {'city': row[0], 'country': ''}
+        elif geo_type == 'country':
+            cur.execute("SELECT name FROM v2_countries WHERE id = %s", (geo_id,))
+            row = cur.fetchone()
+            if row:
+                return {'city': row[0], 'country': ''}
+        elif geo_type == 'region':
+            cur.execute("SELECT name FROM v2_regions WHERE id = %s", (geo_id,))
             row = cur.fetchone()
             if row:
                 return {'city': row[0], 'country': ''}

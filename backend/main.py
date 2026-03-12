@@ -1,16 +1,8 @@
 """
 main.py — FastAPI backend for the CVU City Slides generator.
 
-Endpoints:
-  POST /api/auth           → exchange password for bearer token
-  GET  /api/cities         → city + agglomeration list
-  POST /api/generate       → returns .pptx file
-  POST /api/sync           → manually trigger MySQL→PG sync
-  GET  /api/sync/status    → sync status
-  GET  /api/health         → liveness + DB check
-
-Auth: Bearer token = SHA-256 of PASSWORD env var.
-Daily sync: APScheduler runs sync_mysql_to_pg.py at 03:00 UTC.
+geo_type: 'city' | 'agglomeration' | 'country' | 'region'
+Slide 3 (vs. other cities in country) is only available for geo_type='city'.
 """
 
 import os
@@ -40,7 +32,7 @@ PASSWORD        = os.getenv("PASSWORD")
 SYNC_SCRIPT     = os.getenv("SYNC_SCRIPT", "sync_mysql_to_pg.py")
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 
-_TOKEN     = hashlib.sha256(PASSWORD.encode()).hexdigest()
+_TOKEN     = hashlib.sha256((PASSWORD or "").encode()).hexdigest()
 _sync_lock = threading.Lock()
 _sync_status = {"running": False, "last_run": None, "last_status": "never"}
 
@@ -64,14 +56,9 @@ def on_startup():
         db.discover_schemas()
     except Exception as e:
         log.error("Schema discovery failed: %s", e)
-
-    # Daily sync at 03:00 UTC
     _scheduler.add_job(
-        _run_sync_subprocess,
-        trigger="cron",
-        hour=3, minute=0,
-        id="daily_sync",
-        replace_existing=True,
+        _run_sync_subprocess, trigger="cron",
+        hour=3, minute=0, id="daily_sync", replace_existing=True,
     )
     _scheduler.start()
     log.info("Daily sync scheduled at 03:00 UTC")
@@ -83,20 +70,18 @@ def on_shutdown():
     db.close_pools()
 
 
-# ── Auth helper ───────────────────────────────────────────────────────────────
+# ── Auth ──────────────────────────────────────────────────────────────────────
 
 def _check_auth(authorization: str | None):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Missing or malformed Authorization header")
-    token = authorization.split(" ", 1)[1]
-    if token != _TOKEN:
+    if authorization.split(" ", 1)[1] != _TOKEN:
         raise HTTPException(403, "Invalid token")
 
 
-# ── Sync helper (shared by scheduler + manual trigger) ───────────────────────
+# ── Sync ──────────────────────────────────────────────────────────────────────
 
 def _run_sync_subprocess():
-    """Run sync_mysql_to_pg.py as a subprocess. Used by both cron and manual trigger."""
     with _sync_lock:
         _sync_status["running"] = True
         _sync_status["last_status"] = "running"
@@ -119,17 +104,18 @@ def _run_sync_subprocess():
             _sync_status["last_run"] = datetime.now(timezone.utc).isoformat()
 
 
-# ── Schemas ───────────────────────────────────────────────────────────────────
+# ── Request schemas ───────────────────────────────────────────────────────────
 
 class AuthRequest(BaseModel):
     password: str
 
+
 class GenerateRequest(BaseModel):
-    city_id:    int
-    city_type:  str                   # "city" | "agglomeration"
-    city_name:  str                   # for GHSL lookup
-    country_id: Optional[int] = None
-    threshold:  int = 100             # metres
+    geo_id:     int
+    geo_type:   str              # 'city' | 'agglomeration' | 'country' | 'region'
+    geo_name:   str              # display name (used for GHSL lookup on slide 5)
+    country_id: Optional[int] = None   # required for slide 3 (city only)
+    threshold:  int = 100
     slides:     list[int] = [2, 3, 4, 5, 6]
 
 
@@ -139,26 +125,25 @@ class GenerateRequest(BaseModel):
 def health():
     return {
         "status": "ok",
-        "time": datetime.now(timezone.utc).isoformat(),
-        "sync": _sync_status,
+        "time":   datetime.now(timezone.utc).isoformat(),
+        "sync":   _sync_status,
     }
 
 
 @app.post("/api/auth")
 def authenticate(body: AuthRequest):
-    """Exchange password for a bearer token."""
     if hashlib.sha256(body.password.encode()).hexdigest() != _TOKEN:
         raise HTTPException(403, "Wrong password")
     return {"token": _TOKEN}
 
 
-@app.get("/api/cities")
-def city_list(authorization: str = Header(None)):
+@app.get("/api/geographies")
+def geo_list(authorization: str = Header(None)):
     _check_auth(authorization)
     try:
-        return queries.get_city_list()
+        return queries.get_geo_list()
     except Exception as e:
-        log.exception("city_list failed")
+        log.exception("geo_list failed")
         raise HTTPException(500, str(e))
 
 
@@ -166,19 +151,22 @@ def city_list(authorization: str = Header(None)):
 def generate(req: GenerateRequest, authorization: str = Header(None)):
     _check_auth(authorization)
 
-    meta         = queries.get_city_meta(req.city_id, req.city_type)
-    city_name    = meta["city"]
-    country_name = meta["country"]
+    meta     = queries.get_geo_meta(req.geo_id, req.geo_type)
+    geo_name = meta["name"]
+    subtitle = meta["subtitle"]   # country name for cities, empty otherwise
+
+    # Slide 3 only available for cities
+    requested_slides = [s for s in req.slides if not (s == 3 and req.geo_type != 'city')]
 
     slide_data = {}
     for slide_num, fn, args in [
-        (2, queries.slide2_data, (req.city_id, req.city_type, req.threshold)),
-        (3, queries.slide3_data, (req.city_id, req.city_type, req.country_id, req.threshold)),
-        (4, queries.slide4_data, (req.city_id, req.city_type, req.threshold)),
-        (5, queries.slide5_data, (req.city_id, req.city_type, req.threshold, req.city_name)),
-        (6, queries.slide6_data, (req.city_id, req.city_type, req.threshold)),
+        (2, queries.slide2_data, (req.geo_id, req.geo_type, req.threshold)),
+        (3, queries.slide3_data, (req.geo_id, req.geo_type, req.country_id, req.threshold)),
+        (4, queries.slide4_data, (req.geo_id, req.geo_type, req.threshold)),
+        (5, queries.slide5_data, (req.geo_id, req.geo_type, req.threshold, req.geo_name)),
+        (6, queries.slide6_data, (req.geo_id, req.geo_type, req.threshold)),
     ]:
-        if slide_num not in req.slides:
+        if slide_num not in requested_slides:
             continue
         if slide_num == 3 and not req.country_id:
             continue
@@ -190,18 +178,18 @@ def generate(req: GenerateRequest, authorization: str = Header(None)):
 
     try:
         pptx_bytes = pptx_gen.generate_pptx(
-            city_name=city_name,
-            country_name=country_name,
+            geo_name=geo_name,
+            subtitle=subtitle,
             threshold=req.threshold,
             slide_data=slide_data,
-            selected_slides=req.slides,
+            selected_slides=requested_slides,
         )
     except Exception as e:
         log.exception("PPTX generation failed")
         raise HTTPException(500, f"PPTX generation failed: {e}")
 
-    safe_city = city_name.replace(" ", "_").replace("/", "-")
-    filename  = f"CVU_{safe_city}_{req.threshold}m.pptx"
+    safe_name = geo_name.replace(" ", "_").replace("/", "-")
+    filename  = f"CVU_{safe_name}_{req.threshold}m.pptx"
 
     return Response(
         content=pptx_bytes,
@@ -212,7 +200,6 @@ def generate(req: GenerateRequest, authorization: str = Header(None)):
 
 @app.post("/api/sync")
 def trigger_sync(authorization: str = Header(None)):
-    """Manually kick off the MySQL → PostgreSQL sync in a background thread."""
     _check_auth(authorization)
     if _sync_status["running"]:
         return {"status": "already_running", "last_run": _sync_status["last_run"]}

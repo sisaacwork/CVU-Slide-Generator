@@ -238,33 +238,31 @@ def _chart6_updates(s6: dict):
 # ─── Main entry point ────────────────────────────────────────────────────────
 
 def generate_pptx(
-    city_name:    str,
-    country_name: str,
+    geo_name:     str,
+    subtitle:     str,           # country name for cities, empty for country/region
     threshold:    int,
-    slide_data:   dict,        # keys: 's2', 's3', 's4', 's5', 's6'
-    selected_slides: list[int] | None = None,  # None = all
+    slide_data:   dict,
+    selected_slides: list[int] | None = None,
 ) -> bytes:
     """
     Build and return PPTX bytes.
 
-    slide_data keys:
-      s2 → slide2_data output
-      s3 → slide3_data output (may be None for agglomerations)
-      s4 → slide4_data output
-      s5 → slide5_data output
-      s6 → slide6_data output
+    slide_data keys: s2, s3, s4, s5, s6
     """
-    today = datetime.date.today()
+    today      = datetime.date.today()
     month_abbr = today.strftime('%b').upper()
 
+    # {city}{country} may appear adjacent in the same paragraph run on the
+    # cover slide with no separator — handle the combined case first.
     replacements = {
-        '{city}':            city_name,
-        '{country}':         country_name,
-        '{threshold}':       str(threshold),
-        '{year}':            str(today.year),
-        '{month}':           month_abbr,
-        '{day}':             f"{today.day:02d}",
-        '{2000_growth_pct}': str(slide_data.get('s2', {}).get('growth_pct_2000', 0)),
+        '{city}{country}': f'{geo_name}, {subtitle}' if subtitle else geo_name,
+        '{city}':          geo_name,
+        '{country}':       subtitle,
+        '{threshold}':     str(threshold),
+        '{year}':          str(today.year),
+        '{month}':         month_abbr,
+        '{day}':           f"{today.day:02d}",
+        '{2000_growth_pct}': str((slide_data.get('s2') or {}).get('growth_pct_2000', 0)),
     }
 
     # Step 1: text replacement via python-pptx
