@@ -36,7 +36,7 @@ logging.basicConfig(level=logging.INFO,
 log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-PASSWORD        = os.getenv("PASSWORD", "CTBUH->CVUin2026")
+PASSWORD        = os.getenv("PASSWORD")
 SYNC_SCRIPT     = os.getenv("SYNC_SCRIPT", "sync_mysql_to_pg.py")
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 

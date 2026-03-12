@@ -9,15 +9,10 @@ import psycopg2.extras
 log = logging.getLogger(__name__)
 
 CVU_DSN = os.getenv(
-    "CVU_DSN",
-    "postgres://avnadmin:AVNS_tnbgy7eoqDmdFg-NsLA"
-    "@buildingdb-buildingdb.a.aivencloud.com:13020"
-    "/defaultdb?sslmode=require"
+    "CVU_DSN"
 )
 GHSL_DSN = os.getenv(
-    "GHSL_DSN",
-    "postgres://avnadmin:AVNS_6tFbHFoB3cJA1ORIbAE"
-    "@vui-vui.i.aivencloud.com:15955/defaultdb?sslmode=require"
+    "GHSL_DSN"
 )
 
 _cvu_pool  = None

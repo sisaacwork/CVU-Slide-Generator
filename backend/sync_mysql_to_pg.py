@@ -19,6 +19,7 @@ Dependencies:
     pip install pymysql psycopg2-binary
 """
 
+import os 
 import sys
 import datetime
 import pymysql
@@ -32,11 +33,11 @@ import psycopg2.extras
 # ─────────────────────────────────────────────────────────────────────────────
 
 MYSQL_CONFIG = dict(
-    host     = "mysql.ctbuh.org",
-    user     = "build_db_prod_RO",
-    password = "pR=c8E&RuB9Y",
-    port     = 3306,
-    database = "buldingdb",
+    host     = os.environ["MYSQL_HOST"],
+    user     = os.environ["MYSQL_USER"],
+    password = os.environ["MYSQL_PASSWORD"],
+    port     = int(os.getenv("MYSQL_PORT", "3306")),
+    database = os.environ["MYSQL_DATABASE"],
     charset  = "utf8mb4",
     connect_timeout = 30,
 )
