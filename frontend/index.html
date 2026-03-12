@@ -153,21 +153,75 @@ function SlideCard({ slide, checked, onToggle, disabled }) {
 // ─── Sync panel ───────────────────────────────────────────────────────────────
 function SyncPanel({ token }) {
   const [st,setSt]=useState(null); const [busy,setBusy]=useState(false);
-  async function refresh(){try{const r=await api("/api/sync/status",{headers:hdrs(token)});if(r.ok)setSt(await r.json());}catch{}}
-  async function sync(){setBusy(true);try{await api("/api/sync",{method:"POST",headers:hdrs(token)});await refresh();}finally{setBusy(false);}}
-  useEffect(()=>{refresh();},[]);
+  const [elapsed,setElapsed]=useState(0); const timerRef=useRef(null); const pollRef=useRef(null);
+
+  async function refresh(){
+    try{const r=await api("/api/sync/status",{headers:hdrs(token)});if(r.ok){const d=await r.json();setSt(d);return d;}}catch{}
+    return null;
+  }
+
+  // Start polling every 2s while running; stop when done
+  function startPolling(){
+    if(pollRef.current)return;
+    pollRef.current=setInterval(async()=>{
+      const d=await refresh();
+      if(d&&!d.running){
+        clearInterval(pollRef.current); pollRef.current=null;
+        clearInterval(timerRef.current); timerRef.current=null;
+        setElapsed(0);
+      }
+    },2000);
+  }
+
+  async function sync(){
+    setBusy(true);
+    try{
+      await api("/api/sync",{method:"POST",headers:hdrs(token)});
+      await refresh();
+      // Start elapsed timer
+      const t0=Date.now();
+      setElapsed(0);
+      timerRef.current=setInterval(()=>setElapsed(Math.floor((Date.now()-t0)/1000)),500);
+      startPolling();
+    }finally{setBusy(false);}
+  }
+
+  // Poll on mount, and kick off polling if already running
+  useEffect(()=>{
+    refresh().then(d=>{if(d?.running){startPolling();}});
+    return()=>{
+      clearInterval(pollRef.current);
+      clearInterval(timerRef.current);
+    };
+  },[]);
+
   const col={success:"#66CC00",failed:"#f87171",running:"#facc15",never:"#6b7280"};
   const s=st?.last_status||"never";
+  const isRunning=st?.running;
+
+  // Animated indeterminate progress bar while running
+  const progressBar=isRunning&&h("div",{class:"mt-2 rounded-full overflow-hidden",style:"height:3px;background:#1f1f1f"},
+    h("div",{class:"h-full rounded-full",style:"background:#facc15;animation:progress-slide 1.4s ease-in-out infinite;width:40%"})
+  );
+
   return h("div",{class:"rounded-xl border p-4 text-xs",style:"border-color:#262626;background:#111"},
+    h("style",null,
+      "@keyframes progress-slide{0%{transform:translateX(-100%)}100%{transform:translateX(350%)}}"
+    ),
     h("div",{class:"flex items-center justify-between mb-2"},
       h("span",{class:"text-neutral-400 font-medium"},"Database Sync"),
-      h("button",{type:"button",onClick:sync,disabled:busy||st?.running,class:"px-3 py-1 rounded-lg text-neutral-300 disabled:opacity-40",style:"background:#1f1f1f"},
-        st?.running?"Running…":busy?"Starting…":"Sync Now")
+      h("button",{type:"button",onClick:sync,disabled:busy||isRunning,
+        class:"px-3 py-1 rounded-lg text-neutral-300 disabled:opacity-40",style:"background:#1f1f1f"},
+        isRunning?"Running…":busy?"Starting…":"Sync Now")
     ),
     st&&h("div",{class:"space-y-0.5"},
-      h("p",{class:"text-neutral-500"},"Last run: ",h("span",{class:"text-neutral-400"},st.last_run?new Date(st.last_run).toLocaleString():"Never")),
-      h("p",{class:"text-neutral-500"},"Status: ",h("span",{style:`color:${col[s]||"#999"}`},s))
-    )
+      h("p",{class:"text-neutral-500"},"Last run: ",h("span",{class:"text-neutral-400"},
+        st.last_run?new Date(st.last_run).toLocaleString():"Never")),
+      h("p",{class:"text-neutral-500"},"Status: ",
+        h("span",{style:`color:${col[s.split(':')[0]]||"#999"}`},
+          isRunning&&elapsed>0?`running (${elapsed}s)`:s))
+    ),
+    progressBar
   );
 }
 
