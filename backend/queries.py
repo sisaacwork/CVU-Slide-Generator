@@ -64,10 +64,7 @@ def _geo_filter(geo_type: str, param: str = 'geo_id') -> str:
     if geo_type == 'city':
         return f"b.{CITY_COL} = %({param})s"
     elif geo_type == 'agglomeration':
-        return f"""b.{CITY_COL} IN (
-            SELECT c.id FROM v2_cities c
-            JOIN agglomeration_countries ac ON ac.country_id = c.country_id
-            WHERE ac.agglomeration_id = %({param})s)"""
+        return f"b.{CITY_COL} IN (SELECT id FROM v2_cities WHERE agglomeration_id = %({param})s)"
     elif geo_type == 'country':
         return f"b.country_id = %({param})s"
     elif geo_type == 'region':
@@ -170,11 +167,11 @@ def slide2_data(geo_id: int, geo_type: str, threshold: int):
     return {'years': years_labels, 'values': values, 'growth_pct_2000': growth_pct}
 
 
-# ─── Slide 3: City vs Other Cities in Country (cities only) ─────────────────
+# ─── Slide 3: vs Other Cities (city and agglomeration) ──────────────────────
 
 def slide3_data(geo_id: int, geo_type: str, country_id: int, threshold: int):
-    """Only meaningful for city geo_type. Returns None otherwise."""
-    if geo_type != 'city':
+    """Supported for city and agglomeration. Returns None for country/region."""
+    if geo_type not in ('city', 'agglomeration'):
         return None
 
     current_year = datetime.date.today().year
@@ -188,31 +185,55 @@ def slide3_data(geo_id: int, geo_type: str, country_id: int, threshold: int):
           AND {YEAR_COL} BETWEEN %(start)s AND %(end_yr)s
     """
     params = {
-        'geo_id': geo_id, 'country_id': country_id,
+        'geo_id': geo_id,
         'threshold': threshold, 'statuses': COMPLETED_STATUSES,
         'start': START_YEAR, 'end_yr': current_year,
     }
 
     with cvu_conn() as conn:
         cur = conn.cursor()
-        cur.execute(base + f" AND b.{CITY_COL} = %(geo_id)s GROUP BY yr ORDER BY yr", params)
-        city_rows = dict(cur.fetchall())
 
-        cur.execute(base + f"""
-            AND b.{CITY_COL} IN (
-                SELECT id FROM v2_cities
-                WHERE country_id = %(country_id)s AND id != %(geo_id)s
-            )
-            GROUP BY yr ORDER BY yr
-        """, params)
-        other_rows = dict(cur.fetchall())
+        if geo_type == 'city':
+            params['country_id'] = country_id
+            cur.execute(base + f" AND b.{CITY_COL} = %(geo_id)s GROUP BY yr ORDER BY yr", params)
+            focus_rows = dict(cur.fetchall())
+            cur.execute(base + f"""
+                AND b.{CITY_COL} IN (
+                    SELECT id FROM v2_cities
+                    WHERE country_id = %(country_id)s AND id != %(geo_id)s
+                )
+                GROUP BY yr ORDER BY yr
+            """, params)
+            other_rows = dict(cur.fetchall())
+
+        else:  # agglomeration
+            cur.execute(base + f"""
+                AND b.{CITY_COL} IN (
+                    SELECT id FROM v2_cities WHERE agglomeration_id = %(geo_id)s
+                )
+                GROUP BY yr ORDER BY yr
+            """, params)
+            focus_rows = dict(cur.fetchall())
+            # Other = same countries as agglomeration, but not this agglomeration's cities
+            cur.execute(base + f"""
+                AND b.{CITY_COL} IN (
+                    SELECT id FROM v2_cities
+                    WHERE country_id IN (
+                        SELECT country_id FROM agglomeration_countries
+                        WHERE agglomeration_id = %(geo_id)s
+                    )
+                    AND (agglomeration_id IS DISTINCT FROM %(geo_id)s)
+                )
+                GROUP BY yr ORDER BY yr
+            """, params)
+            other_rows = dict(cur.fetchall())
 
     year_range   = list(range(START_YEAR, current_year + 1))
-    city_vals    = [c for _, c in _make_cumulative(city_rows, year_range)]
+    focus_vals   = [c for _, c in _make_cumulative(focus_rows, year_range)]
     other_vals   = [c for _, c in _make_cumulative(other_rows, year_range)]
     years_labels = [str(y) if y < current_year else f"{y}*" for y in year_range]
 
-    return {'years': years_labels, 'city_values': city_vals, 'other_values': other_vals}
+    return {'years': years_labels, 'city_values': focus_vals, 'other_values': other_vals}
 
 
 # ─── Slide 4: Projected Tall Building Growth ────────────────────────────────

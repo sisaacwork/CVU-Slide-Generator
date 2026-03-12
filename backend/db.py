@@ -3,44 +3,48 @@ db.py — connection pools for both Aiven PostgreSQL databases.
 """
 import os, logging
 import psycopg2
-from psycopg2 import pool
-import psycopg2.extras
 
 log = logging.getLogger(__name__)
 
 CVU_DSN = os.getenv(
-    "CVU_DSN"
+    "CVU_DSN",
+    "postgres://avnadmin:AVNS_tnbgy7eoqDmdFg-NsLA"
+    "@buildingdb-buildingdb.a.aivencloud.com:13020"
+    "/defaultdb?sslmode=require"
 )
 GHSL_DSN = os.getenv(
-    "GHSL_DSN"
+    "GHSL_DSN",
+    "postgres://avnadmin:AVNS_6tFbHFoB3cJA1ORIbAE"
+    "@vui-vui.i.aivencloud.com:15955/defaultdb?sslmode=require"
 )
 
-_cvu_pool  = None
-_ghsl_pool = None
-
 def init_pools():
-    global _cvu_pool, _ghsl_pool
-    _cvu_pool  = pool.SimpleConnectionPool(1, 10, CVU_DSN)
-    _ghsl_pool = pool.SimpleConnectionPool(1, 5,  GHSL_DSN)
-    log.info("DB pools initialised")
+    # Validate connections at startup; errors surface early
+    for dsn, label in [(CVU_DSN, "CVU"), (GHSL_DSN, "GHSL")]:
+        conn = psycopg2.connect(dsn)
+        conn.close()
+        log.info("%s DB reachable", label)
 
 def close_pools():
-    if _cvu_pool:  _cvu_pool.closeall()
-    if _ghsl_pool: _ghsl_pool.closeall()
+    pass  # per-request connections close themselves
 
-class _PoolConn:
-    def __init__(self, p):
-        self._pool = p
+class _DirectConn:
+    """Per-request connection — immune to Aiven idle-timeout after long syncs."""
+    def __init__(self, dsn):
+        self._dsn = dsn
         self._conn = None
     def __enter__(self):
-        self._conn = self._pool.getconn()
+        self._conn = psycopg2.connect(self._dsn)
         self._conn.autocommit = True
         return self._conn
     def __exit__(self, *_):
-        self._pool.putconn(self._conn)
+        try:
+            self._conn.close()
+        except Exception:
+            pass
 
-def cvu_conn():  return _PoolConn(_cvu_pool)
-def ghsl_conn(): return _PoolConn(_ghsl_pool)
+def cvu_conn():  return _DirectConn(CVU_DSN)
+def ghsl_conn(): return _DirectConn(GHSL_DSN)
 
 # Populated at startup by discover_schemas()
 BUILDING_COLS: dict = {}

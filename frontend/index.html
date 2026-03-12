@@ -252,13 +252,13 @@ function App() {
   // When geo type changes, clear selection and manage slide 3
   useEffect(()=>{
     setSel(null); setDone(false);
-    if(geoType!=="city"){
+    if(geoType!=="city" && geoType!=="agglomeration"){
       setSlides(s=>s.filter(x=>x!==3));
     }
   },[geoType]);
 
   function toggle(id){
-    if(id===3&&geoType!=="city") return; // slide 3 only for cities
+    if(id===3&&geoType!=="city" && geoType!=="agglomeration") return; // slide 3 only for cities
     setSlides(p=>p.includes(id)?p.filter(s=>s!==id):[...p,id]);
     setDone(false);
   }
@@ -267,7 +267,7 @@ function App() {
     if(!sel)return;
     setBusy(true);setErr("");setDone(false);
     try{
-      const activeSlides = slides.filter(s=>!(s===3&&geoType!=="city"));
+      const activeSlides = slides.filter(s=>!(s===3&&geoType!=="city" && geoType!=="agglomeration"));
       const r=await api("/api/generate",{method:"POST",headers:hdrs(token),body:JSON.stringify({
         geo_id:Number(sel.id),
         geo_type:sel.type,
@@ -287,7 +287,7 @@ function App() {
   }
 
   if(!token) return h(Login,{onLogin:login});
-  const canGen=sel&&slides.filter(s=>!(s===3&&geoType!=="city")).length>0;
+  const canGen=sel&&slides.filter(s=>!(s===3&&geoType!=="city" && geoType!=="agglomeration")).length>0;
 
   return h("div",{class:"min-h-screen flex flex-col"},
     // Header
@@ -378,7 +378,7 @@ function App() {
             h("h2",{class:"text-sm font-medium text-neutral-300"},"Select Slides"),
             h("div",{class:"flex gap-3 text-xs"},
               h("button",{type:"button",
-                onClick:()=>setSlides(SLIDES.map(s=>s.id).filter(id=>!(id===3&&geoType!=="city"))),
+                onClick:()=>setSlides(SLIDES.map(s=>s.id).filter(id=>!(id===3&&geoType!=="city" && geoType!=="agglomeration"))),
                 class:"text-neutral-500 hover:text-neutral-300"},"Select all"),
               h("span",{class:"text-neutral-700"},"·"),
               h("button",{type:"button",onClick:()=>setSlides([]),class:"text-neutral-500 hover:text-neutral-300"},"Clear")
@@ -386,7 +386,7 @@ function App() {
           ),
           h("div",{style:"display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:0.75rem"},
             SLIDES.map(s=>{
-              const disabled = s.id===3 && geoType!=="city";
+              const disabled = s.id===3 && geoType!=="city" && geoType!=="agglomeration";
               return h(SlideCard,{key:s.id,slide:s,checked:slides.includes(s.id)&&!disabled,onToggle:toggle,disabled});
             })
           ),
@@ -395,9 +395,9 @@ function App() {
               h("span",{class:"text-neutral-400 font-medium"},"Always included: "),
               "Cover slide and CVU closing slide are part of every export."
             ),
-            geoType!=="city"&&h("p",{class:"text-neutral-500 mt-1"},
+            geoType!=="city" && geoType!=="agglomeration"&&h("p",{class:"text-neutral-500 mt-1"},
               h("span",{class:"text-neutral-400 font-medium"},"Note: "),
-              "Slide 3 (vs. Other Cities) is only available for city-level reports."
+              "Slide 3 (vs. Other Cities) is not available for country or region reports."
             )
           )
         )
