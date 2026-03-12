@@ -1,8 +1,16 @@
 """
 main.py — FastAPI backend for the CVU City Slides generator.
 
-geo_type: 'city' | 'agglomeration' | 'country' | 'region'
-Slide 3 (vs. other cities in country) is only available for geo_type='city'.
+Endpoints:
+  POST /api/auth           → exchange password for bearer token
+  GET  /api/cities         → city + agglomeration + country + region list
+  POST /api/generate       → returns .pptx file
+  POST /api/sync           → manually trigger MySQL → PG sync
+  GET  /api/sync/status    → sync status
+  GET  /api/health         → liveness check
+
+Auth: Bearer token = SHA-256 of PASSWORD env var.
+Daily sync: APScheduler runs sync_mysql_to_pg.py at 03:00 UTC.
 """
 
 import os
@@ -32,7 +40,10 @@ PASSWORD        = os.getenv("PASSWORD")
 SYNC_SCRIPT     = os.getenv("SYNC_SCRIPT", "sync_mysql_to_pg.py")
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 
-_TOKEN     = hashlib.sha256((PASSWORD or "").encode()).hexdigest()
+if not PASSWORD:
+    raise RuntimeError("PASSWORD environment variable is not set")
+
+_TOKEN     = hashlib.sha256(PASSWORD.encode()).hexdigest()
 _sync_lock = threading.Lock()
 _sync_status = {"running": False, "last_run": None, "last_status": "never"}
 
@@ -57,8 +68,9 @@ def on_startup():
     except Exception as e:
         log.error("Schema discovery failed: %s", e)
     _scheduler.add_job(
-        _run_sync_subprocess, trigger="cron",
-        hour=3, minute=0, id="daily_sync", replace_existing=True,
+        _run_sync_subprocess,
+        trigger="cron", hour=3, minute=0,
+        id="daily_sync", replace_existing=True,
     )
     _scheduler.start()
     log.info("Daily sync scheduled at 03:00 UTC")
@@ -104,7 +116,7 @@ def _run_sync_subprocess():
             _sync_status["last_run"] = datetime.now(timezone.utc).isoformat()
 
 
-# ── Request schemas ───────────────────────────────────────────────────────────
+# ── Schemas ───────────────────────────────────────────────────────────────────
 
 class AuthRequest(BaseModel):
     password: str
@@ -112,9 +124,9 @@ class AuthRequest(BaseModel):
 
 class GenerateRequest(BaseModel):
     geo_id:     int
-    geo_type:   str              # 'city' | 'agglomeration' | 'country' | 'region'
-    geo_name:   str              # display name (used for GHSL lookup on slide 5)
-    country_id: Optional[int] = None   # required for slide 3 (city only)
+    geo_type:   str                   # "city" | "agglomeration" | "country" | "region"
+    geo_name:   str                   # used for GHSL city name lookup on slide 5
+    country_id: Optional[int] = None  # slide 3 only (city geo_type)
     threshold:  int = 100
     slides:     list[int] = [2, 3, 4, 5, 6]
 
@@ -125,8 +137,8 @@ class GenerateRequest(BaseModel):
 def health():
     return {
         "status": "ok",
-        "time":   datetime.now(timezone.utc).isoformat(),
-        "sync":   _sync_status,
+        "time": datetime.now(timezone.utc).isoformat(),
+        "sync": _sync_status,
     }
 
 
@@ -137,11 +149,12 @@ def authenticate(body: AuthRequest):
     return {"token": _TOKEN}
 
 
+@app.get("/api/cities")
 @app.get("/api/geographies")
 def geo_list(authorization: str = Header(None)):
     _check_auth(authorization)
     try:
-        return queries.get_geo_list()
+        return queries.get_city_list()
     except Exception as e:
         log.exception("geo_list failed")
         raise HTTPException(500, str(e))
@@ -151,12 +164,15 @@ def geo_list(authorization: str = Header(None)):
 def generate(req: GenerateRequest, authorization: str = Header(None)):
     _check_auth(authorization)
 
-    meta     = queries.get_geo_meta(req.geo_id, req.geo_type)
-    geo_name = meta["name"]
-    subtitle = meta["subtitle"]   # country name for cities, empty otherwise
+    meta         = queries.get_city_meta(req.geo_id, req.geo_type)
+    city_name    = meta["city"]
+    country_name = meta["country"]
 
-    # Slide 3 only available for cities
-    requested_slides = [s for s in req.slides if not (s == 3 and req.geo_type != 'city')]
+    # Slide 3 only valid for city geo_type
+    active_slides = [
+        s for s in req.slides
+        if not (s == 3 and req.geo_type != "city")
+    ]
 
     slide_data = {}
     for slide_num, fn, args in [
@@ -166,7 +182,7 @@ def generate(req: GenerateRequest, authorization: str = Header(None)):
         (5, queries.slide5_data, (req.geo_id, req.geo_type, req.threshold, req.geo_name)),
         (6, queries.slide6_data, (req.geo_id, req.geo_type, req.threshold)),
     ]:
-        if slide_num not in requested_slides:
+        if slide_num not in active_slides:
             continue
         if slide_num == 3 and not req.country_id:
             continue
@@ -178,17 +194,17 @@ def generate(req: GenerateRequest, authorization: str = Header(None)):
 
     try:
         pptx_bytes = pptx_gen.generate_pptx(
-            geo_name=geo_name,
-            subtitle=subtitle,
+            city_name=city_name,
+            country_name=country_name,
             threshold=req.threshold,
             slide_data=slide_data,
-            selected_slides=requested_slides,
+            selected_slides=active_slides,
         )
     except Exception as e:
         log.exception("PPTX generation failed")
         raise HTTPException(500, f"PPTX generation failed: {e}")
 
-    safe_name = geo_name.replace(" ", "_").replace("/", "-")
+    safe_name = city_name.replace(" ", "_").replace("/", "-")
     filename  = f"CVU_{safe_name}_{req.threshold}m.pptx"
 
     return Response(
@@ -203,8 +219,7 @@ def trigger_sync(authorization: str = Header(None)):
     _check_auth(authorization)
     if _sync_status["running"]:
         return {"status": "already_running", "last_run": _sync_status["last_run"]}
-    t = threading.Thread(target=_run_sync_subprocess, daemon=True)
-    t.start()
+    threading.Thread(target=_run_sync_subprocess, daemon=True).start()
     return {"status": "started"}
 
 
